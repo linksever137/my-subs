@@ -1,4 +1,4 @@
-name: Update Sub (Ultimate Fix)
+name: Update Sub (DrissionPage)
 
 on:
   schedule:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  bypass-waf-selenium:
+  bypass-waf-drission:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -23,99 +23,52 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # 安装 undetected-chromedriver，这是过 CF 的神器
-          pip install undetected-chromedriver selenium requests
+          # 安装 DrissionPage，它不需要 chromedriver，没有版本烦恼
+          pip install DrissionPage
 
       - name: Run Bypass Script
         env:
           TARGET_URL: ${{ secrets.CF_SUB_URL }}
         run: |
-          # 创建 Python 脚本
           cat << 'EOF' > bypass.py
-          import undetected_chromedriver as uc
-          from selenium.webdriver.common.by import By
+          from DrissionPage import ChromiumPage, ChromiumOptions
           import time
           import os
           import sys
 
-          # 1. 获取目标 URL
+          # 1. 获取 URL
           url = os.environ.get("TARGET_URL")
           if not url:
               print("Error: SECRET URL not found!")
               sys.exit(1)
 
-          print("Setting up Chrome...")
-          
-          # 2. 配置 Chrome (关键设置)
-          options = uc.ChromeOptions()
-          options.add_argument('--headless=new')  # 使用新版无头模式
-          options.add_argument('--no-sandbox')
-          options.add_argument('--disable-dev-shm-usage')
-          options.add_argument('--disable-gpu')
-          options.add_argument('--window-size=1920,1080')
+          # 2. 配置浏览器 (无头模式，专门针对 Linux 环境优化)
+          co = ChromiumOptions()
+          co.set_argument('--headless=new') # 新版无头模式
+          co.set_argument('--no-sandbox')
+          co.set_argument('--disable-gpu')
+          # 伪装 User-Agent，防止被轻易识别为脚本
+          co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
 
-          # 3. 启动浏览器
-          driver = uc.Chrome(options=options, use_subprocess=True, version_main=119)
-          
+          print("Starting Browser...")
           try:
-              print(f"Navigating to {url} ...")
-              driver.get(url)
+              page = ChromiumPage(co)
               
-              # 4. 关键等待：给 CF 5秒盾足够的时间跳转
+              print(f"Navigating to {url} ...")
+              page.get(url)
+              
+              # 3. 智能等待 Cloudflare
+              # DrissionPage 操控浏览器的特征更少，通常过盾更快
+              # 但我们还是给足 25 秒
               print("Waiting 25 seconds for Cloudflare challenge...")
               time.sleep(25)
               
-              # 5. 获取网页内容
-              # 通常订阅内容是纯文本，会被浏览器放在 <pre> 标签或者直接 body 里
-              page_source = driver.page_source
-              body_text = driver.find_element(By.TAG_NAME, "body").text
+              # 4. 获取网页 body 的文本
+              # Cloudflare 验证通过后，Body 里应该就是纯 Base64 字符串
+              content = page.ele('tag:body').text
               
-              # 调试：打印前 100 个字符
-              print(f"Preview content: {body_text[:100]}")
+              # 调试：打印前 50 个字符看看抓到了什么
+              print(f"Preview content: {content[:50]}")
 
-              # 6. 检查是否还在验证页面
-              if "Just a moment" in body_text or "Enable JavaScript" in body_text:
-                  print("❌ Failed: Still stuck on challenge page.")
-                  # 如果失败，打印网页源码方便调试
-                  print("Page Source Dump:")
-                  print(page_source[:500]) 
-                  sys.exit(1)
-                  
-              # 7. 保存文件
-              with open("sub.txt", "w", encoding="utf-8") as f:
-                  f.write(body_text)
-                  
-              print("✅ Success! Subscription saved.")
-
-          except Exception as e:
-              print(f"❌ Error occurred: {e}")
-              sys.exit(1)
-              
-          finally:
-              try:
-                  driver.quit()
-              except:
-                  pass
-          EOF
-          
-          # 运行脚本
-          python bypass.py
-
-      - name: Commit and Push
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          
-          # 再次检查文件内容
-          if [ ! -s sub.txt ]; then
-             echo "Error: File is empty."
-             exit 1
-          fi
-          
-          git add sub.txt
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update sub: $(date)"
-            git push
-          fi
+              # 5. 检查是否失败
+              if "Just a moment" in content or "Enable JavaScript" in content:
