@@ -1,4 +1,4 @@
-name: Update Subscription (WAF Allow)
+name: Update Subscription (Debug)
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  download-allow:
+  download-debug:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,22 +15,35 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download with Secret User-Agent
+      - name: Download with Secret UA
         run: |
-          # 关键点：-A 参数后面必须填你在 Cloudflare 里设置的那个 User-Agent
-          # 比如你刚才设的是 MySecretPass123
-          curl -L -A "MySecretPass123" "${{ secrets.CF_SUB_URL }}" -o sub.txt
+          # === 这里的 User-Agent 必须和你 Cloudflare 填的一模一样 ===
+          MY_UA="GitHubActionsBypass"
+          # ========================================================
           
-          # 检查是否还是由 HTML 错误（包含 DOCTYPE 说明还是被拦了）
+          echo "Using User-Agent: $MY_UA"
+          
+          # 下载文件
+          curl -v -L -A "$MY_UA" "${{ secrets.CF_SUB_URL }}" -o sub.txt
+          
+          # 检查文件内容
           if grep -q "<!DOCTYPE html>" sub.txt; then
-             echo "Error: Still blocked! Check your WAF rule."
+             echo "========================================"
+             echo "❌ 失败：仍然被 Cloudflare 拦截"
+             echo "以下是 Cloudflare 返回的页面内容（前20行）："
+             echo "========================================"
+             head -n 20 sub.txt
+             echo "========================================"
+             echo "请检查 Cloudflare WAF 规则中是否勾选了 'Browser Integrity Check' 和 'Security Level'"
              exit 1
           fi
           
           if [ ! -s sub.txt ]; then
-            echo "Error: Empty file."
+            echo "❌ 失败：文件为空"
             exit 1
           fi
+          
+          echo "✅ 成功：获取到订阅内容"
 
       - name: Commit and Push
         run: |
