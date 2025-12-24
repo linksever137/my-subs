@@ -1,0 +1,47 @@
+name: Update Base64 Subscription
+
+on:
+  schedule:
+    # 每 4 小时运行一次
+    - cron: '0 */4 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  download-base64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Base64 Content
+        run: |
+          # 下载内容并保存为 sub.txt
+          # 使用 User-Agent 防止被某些 Worker 拦截，-L 跟随重定向
+          curl -L -A "v2rayng" "${{ secrets.CF_SUB_URL }}" -o sub.txt
+          
+          # 检查文件是否为空
+          if [ ! -s sub.txt ]; then
+            echo "Error: File is empty!"
+            exit 1
+          fi
+          
+          # 简单打印前几个字符确认一下（为了安全不打印全部）
+          echo "Download success. Head content:"
+          head -c 20 sub.txt
+
+      - name: Commit and Push
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          
+          git add sub.txt
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update Base64 sub: $(date)"
+            git push
+          fi
