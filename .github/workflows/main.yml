@@ -1,13 +1,13 @@
-name: Update Base64 Subscription
+name: Update CF Subscription (Bypass WAF)
 
 on:
   schedule:
-    # 每 2 小时运行一次
+    # 每 4 小时运行一次
     - cron: '0 */2 * * *'
   workflow_dispatch: # 允许手动触发
 
 jobs:
-  download-base64:
+  bypass-and-save:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -16,32 +16,56 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download Base64 Content
-        run: |
-          # 下载内容并保存为 sub.txt
-          # 使用 User-Agent 防止被某些 Worker 拦截，-L 跟随重定向
-          curl -L -A "v2rayng" "${{ secrets.CF_SUB_URL }}" -o sub.txt
-          
-          # 检查文件是否为空
-          if [ ! -s sub.txt ]; then
-            echo "Error: File is empty!"
-            exit 1
-          fi
-          
-          # 简单打印前几个字符确认一下（为了安全不打印全部）
-          echo "Download success. Head content:"
-          head -c 20 sub.txt
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-      - name: Commit and Push
+      - name: Install dependencies
         run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          
-          git add sub.txt
-          
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update Base64 sub: $(date)"
-            git push
-          fi
+          pip install playwright
+          playwright install chromium
+
+      - name: Download Subscription using Playwright
+        env:
+          TARGET_URL: ${{ secrets.CF_SUB_URL }}
+        run: |
+          # 创建一个 Python 脚本来模拟浏览器访问
+          cat << 'EOF' > get_sub.py
+          import os
+          import time
+          from playwright.sync_api import sync_playwright
+
+          url = os.environ.get("TARGET_URL")
+
+          with sync_playwright() as p:
+              # 启动无头浏览器 (Headless Chrome)
+              browser = p.chromium.launch(headless=True)
+              page = browser.new_page()
+              
+              # 设置一个伪装的 User-Agent
+              page.set_extra_http_headers({
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+              })
+
+              print(f"Opening {url}...")
+              page.goto(url)
+              
+              # 关键步骤：等待 Cloudflare 验证跳转
+              # 我们等待 15 秒，通常足够它跳转到真实内容了
+              print("Waiting for Cloudflare challenge...")
+              time.sleep(15)
+              
+              # 获取网页原本的文本内容 (innerText)
+              # 因为订阅链接通常返回纯文本，浏览器会把它渲染在 body 里
+              content = page.inner_text("body")
+              
+              if "Just a moment" in content or "Enable JavaScript" in content:
+                  print("Error: Still stuck on challenge page!")
+                  exit(1)
+              
+              # 保存文件
+              with open("sub.txt", "w", encoding="utf-8") as f:
+                  f.write(content)
+                  
+              print("Success! Content saved.
