@@ -1,12 +1,13 @@
-name: Update Subscription (Debug)
+name: Update Sub (Ultimate Fix)
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    # 每 4 小时运行一次
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 jobs:
-  download-debug:
+  bypass-waf-selenium:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,43 +16,105 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download with Secret UA
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
         run: |
-          # === 这里的 User-Agent 必须和你 Cloudflare 填的一模一样 ===
-          MY_UA="GitHubActionsBypass"
-          # ========================================================
+          # 安装 undetected-chromedriver，这是过 CF 的神器
+          pip install undetected-chromedriver selenium requests
+
+      - name: Run Bypass Script
+        env:
+          TARGET_URL: ${{ secrets.CF_SUB_URL }}
+        run: |
+          # 创建 Python 脚本
+          cat << 'EOF' > bypass.py
+          import undetected_chromedriver as uc
+          from selenium.webdriver.common.by import By
+          import time
+          import os
+          import sys
+
+          # 1. 获取目标 URL
+          url = os.environ.get("TARGET_URL")
+          if not url:
+              print("Error: SECRET URL not found!")
+              sys.exit(1)
+
+          print("Setting up Chrome...")
           
-          echo "Using User-Agent: $MY_UA"
+          # 2. 配置 Chrome (关键设置)
+          options = uc.ChromeOptions()
+          options.add_argument('--headless=new')  # 使用新版无头模式
+          options.add_argument('--no-sandbox')
+          options.add_argument('--disable-dev-shm-usage')
+          options.add_argument('--disable-gpu')
+          options.add_argument('--window-size=1920,1080')
+
+          # 3. 启动浏览器
+          driver = uc.Chrome(options=options, use_subprocess=True, version_main=119)
           
-          # 下载文件
-          curl -v -L -A "$MY_UA" "${{ secrets.CF_SUB_URL }}" -o sub.txt
+          try:
+              print(f"Navigating to {url} ...")
+              driver.get(url)
+              
+              # 4. 关键等待：给 CF 5秒盾足够的时间跳转
+              print("Waiting 25 seconds for Cloudflare challenge...")
+              time.sleep(25)
+              
+              # 5. 获取网页内容
+              # 通常订阅内容是纯文本，会被浏览器放在 <pre> 标签或者直接 body 里
+              page_source = driver.page_source
+              body_text = driver.find_element(By.TAG_NAME, "body").text
+              
+              # 调试：打印前 100 个字符
+              print(f"Preview content: {body_text[:100]}")
+
+              # 6. 检查是否还在验证页面
+              if "Just a moment" in body_text or "Enable JavaScript" in body_text:
+                  print("❌ Failed: Still stuck on challenge page.")
+                  # 如果失败，打印网页源码方便调试
+                  print("Page Source Dump:")
+                  print(page_source[:500]) 
+                  sys.exit(1)
+                  
+              # 7. 保存文件
+              with open("sub.txt", "w", encoding="utf-8") as f:
+                  f.write(body_text)
+                  
+              print("✅ Success! Subscription saved.")
+
+          except Exception as e:
+              print(f"❌ Error occurred: {e}")
+              sys.exit(1)
+              
+          finally:
+              try:
+                  driver.quit()
+              except:
+                  pass
+          EOF
           
-          # 检查文件内容
-          if grep -q "<!DOCTYPE html>" sub.txt; then
-             echo "========================================"
-             echo "❌ 失败：仍然被 Cloudflare 拦截"
-             echo "以下是 Cloudflare 返回的页面内容（前20行）："
-             echo "========================================"
-             head -n 20 sub.txt
-             echo "========================================"
-             echo "请检查 Cloudflare WAF 规则中是否勾选了 'Browser Integrity Check' 和 'Security Level'"
-             exit 1
-          fi
-          
-          if [ ! -s sub.txt ]; then
-            echo "❌ 失败：文件为空"
-            exit 1
-          fi
-          
-          echo "✅ 成功：获取到订阅内容"
+          # 运行脚本
+          python bypass.py
 
       - name: Commit and Push
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
+          
+          # 再次检查文件内容
+          if [ ! -s sub.txt ]; then
+             echo "Error: File is empty."
+             exit 1
+          fi
+          
           git add sub.txt
           if git diff --staged --quiet; then
-            echo "No changes"
+            echo "No changes to commit"
           else
             git commit -m "Update sub: $(date)"
             git push
