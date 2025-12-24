@@ -1,8 +1,7 @@
-name: Update Sub (WAF Bypass)
+name: Update Sub (Final Fix)
 
 on:
   schedule:
-    # 每 4 小时运行一次
     - cron: '0 */4 * * *'
   workflow_dispatch: # 允许手动触发
 
@@ -18,43 +17,42 @@ jobs:
 
       - name: Download Subscription
         run: |
-          # ============================================
-          # 这里的 User-Agent 必须和你 Cloudflare 里填的一模一样！
+          # 1. 设置 User-Agent (必须与 Cloudflare WAF 规则一致)
+          # 如果你还没设规则，请去 Cloudflare 关闭 Bot Fight Mode
           SECRET_UA="MySecretPass2025"
-          # ============================================
           
           echo "Using User-Agent: $SECRET_UA"
           
+          # 2. 下载文件
           # -L: 跟随跳转
-          # -A: 设置 User-Agent
-          # -f: 如果 403/404 报错， curl 会返回错误代码而不是下载错误页面
+          # -f: 失败时不保存
           curl -L -f -A "$SECRET_UA" "${{ secrets.CF_SUB_URL }}" -o sub.txt
           
-          # 检查下载是否成功
-          if [ $? -ne 0 ]; then
-            echo "❌ 下载失败！"
-            echo "请检查：1. Cloudflare 规则是否已部署。2. 规则中的 'Skip' 选项是否勾选了 'Browser Integrity Check'。"
+          # 3. 检查文件内容
+          if [ ! -s sub.txt ]; then
+            echo "❌ Error: File is empty."
             exit 1
           fi
 
-          # 再次检查文件内容是否包含 HTML (双重保险)
           if grep -q "<!DOCTYPE html>" sub.txt; then
-             echo "❌ 还是被拦截了！WAF 规则可能没生效，请等待 1 分钟后再试。"
+             echo "❌ Error: Blocked by Cloudflare (HTML detected)."
              exit 1
           fi
           
-          if [ ! -s sub.txt ]; then
-            echo "❌ 文件为空。"
-            exit 1
-          fi
-          
-          echo "✅ 下载成功！"
+          echo "✅ Download success!"
 
       - name: Commit and Push
         run: |
+          # 配置 Git 身份
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
           
+          # 添加文件
           git add sub.txt
           
-          if git diff --sta
+          # 检查是否有变化
+          # 如果没变化，git commit 会报错，所以用 || echo 忽略错误
+          git commit -m "Update sub: $(date)" || echo "⚠️ No changes to commit"
+          
+          # 推送
+          git push
