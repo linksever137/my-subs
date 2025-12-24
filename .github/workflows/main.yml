@@ -1,13 +1,12 @@
-name: Update CF Subscription (Bypass WAF)
+name: Update Subscription (WAF Allow)
 
 on:
   schedule:
-    # 每 4 小时运行一次
     - cron: '0 */2 * * *'
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
 
 jobs:
-  bypass-and-save:
+  download-allow:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -16,56 +15,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install dependencies
+      - name: Download with Secret User-Agent
         run: |
-          pip install playwright
-          playwright install chromium
+          # 关键点：-A 参数后面必须填你在 Cloudflare 里设置的那个 User-Agent
+          # 比如你刚才设的是 MySecretPass123
+          curl -L -A "MySecretPass123" "${{ secrets.CF_SUB_URL }}" -o sub.txt
+          
+          # 检查是否还是由 HTML 错误（包含 DOCTYPE 说明还是被拦了）
+          if grep -q "<!DOCTYPE html>" sub.txt; then
+             echo "Error: Still blocked! Check your WAF rule."
+             exit 1
+          fi
+          
+          if [ ! -s sub.txt ]; then
+            echo "Error: Empty file."
+            exit 1
+          fi
 
-      - name: Download Subscription using Playwright
-        env:
-          TARGET_URL: ${{ secrets.CF_SUB_URL }}
+      - name: Commit and Push
         run: |
-          # 创建一个 Python 脚本来模拟浏览器访问
-          cat << 'EOF' > get_sub.py
-          import os
-          import time
-          from playwright.sync_api import sync_playwright
-
-          url = os.environ.get("TARGET_URL")
-
-          with sync_playwright() as p:
-              # 启动无头浏览器 (Headless Chrome)
-              browser = p.chromium.launch(headless=True)
-              page = browser.new_page()
-              
-              # 设置一个伪装的 User-Agent
-              page.set_extra_http_headers({
-                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-              })
-
-              print(f"Opening {url}...")
-              page.goto(url)
-              
-              # 关键步骤：等待 Cloudflare 验证跳转
-              # 我们等待 15 秒，通常足够它跳转到真实内容了
-              print("Waiting for Cloudflare challenge...")
-              time.sleep(15)
-              
-              # 获取网页原本的文本内容 (innerText)
-              # 因为订阅链接通常返回纯文本，浏览器会把它渲染在 body 里
-              content = page.inner_text("body")
-              
-              if "Just a moment" in content or "Enable JavaScript" in content:
-                  print("Error: Still stuck on challenge page!")
-                  exit(1)
-              
-              # 保存文件
-              with open("sub.txt", "w", encoding="utf-8") as f:
-                  f.write(content)
-                  
-              print("Success! Content saved.
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add sub.txt
+          if git diff --staged --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Update sub: $(date)"
+            git push
+          fi
